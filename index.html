@@ -3,9 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Ladies Golf League — Tee Time Scheduler</title>
-<script src="https://cdn.sheetjs.com/xlsx-0.18.5/package/dist/xlsx.full.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/xlsx-style@0.8.13/dist/xlsx.full.min.js"></script>
+<title>Ladies Golf League · Pairs — Tee Time Scheduler (Pairs)</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Source+Sans+3:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
 /* ── Reset & Base ─────────────────────────────────────────────────────────── */
@@ -521,7 +520,7 @@ button { cursor: pointer; font-family: 'Source Sans 3', sans-serif; transition: 
   <div class="logo">
     <div class="logo-icon">⛳</div>
     <div class="logo-text">
-      <h1>Ladies Golf League</h1>
+      <h1>Ladies Golf League · Pairs</h1>
       <p>Tee Time Scheduler</p>
     </div>
   </div>
@@ -1353,7 +1352,10 @@ function renderHistory() {
           <span>${w.date || formatWeekDate(w.week)}</span>
           <span>${w.count} players</span>
           ${w.assignments
-            ? `<button class="btn-ghost dark btn-sm" onclick="downloadTeeSheet(${i})">⬇ Sheet</button>`
+? `<span style="display:inline-flex;gap:6px;">
+              <button class="btn-ghost dark btn-sm" onclick="downloadTeeSheet(${i})">⬇ CSV</button>
+              <button class="btn-ghost dark btn-sm" onclick="copyTeeSheet(${i})">📋 Copy</button>
+            </span>`
             : '<span style="color:var(--text-muted);font-size:11px">no data</span>'}
         </div>`
       ).join('')
@@ -1567,25 +1569,51 @@ function scheduleWeek() {
           let rem=[...members];
           for (const sl of slots) { while(cap(sl)>0&&rem.length) sl.players.push(rem.shift()); if(!rem.length) break; }
         }
+      } else if (members.length === 2) {
+        // ── PAIRS POLICY: CP group of 2 — ALWAYS placed in the same slot ──────
+        function slotScore(sl, mems) {
+          return sl.players.reduce((sum, occ) =>
+            sum + mems.reduce((s2, m) => s2 + pairScore(occ.name, m.name), 0), 0);
+        }
+        let placed = false;
+        // Pass 1: best allowed slot with room for both
+        {
+          const candidates = allowed
+            .map(si => slotOf(si))
+            .filter(sl => sl && cap(sl) >= 2)
+            .sort((a, b) => slotScore(a, members) - slotScore(b, members));
+          if (candidates.length) {
+            members.forEach(m => candidates[0].players.push(m));
+            placed = true;
+          }
+        }
+        // Pass 2: relax — any slot in block with room for both
+        if (!placed) {
+          const candidates = blockSlots
+            .map(si => slotOf(si))
+            .filter(sl => sl && cap(sl) >= 2)
+            .sort((a, b) => slotScore(a, members) - slotScore(b, members));
+          if (candidates.length) {
+            members.forEach(m => candidates[0].players.push(m));
+            placed = true;
+          }
+        }
+        // Last resort
+        if (!placed) {
+          let rem = [...members];
+          for (const sl of slots) { while(cap(sl)>0&&rem.length) sl.players.push(rem.shift()); if(!rem.length) break; }
+        }
+
       } else {
-        // 2 or 3 members: split across 2 consecutive slots when possible so that
-        // each member mixes with different non-carpool players each week.
-        // Slot selection is guided by pairing history — prefer slots whose current
-        // occupants have been paired least often with these members.
+        // 3+ members: split across 2 consecutive slots when possible
         let placed = false;
 
-        // Score a slot for a set of members (lower = fewer repeated pairings)
         function slotScore(sl, mems) {
           return sl.players.reduce((sum, occ) =>
             sum + mems.reduce((s2, m) => s2 + pairScore(occ.name, m.name), 0), 0);
         }
 
-        // Pass 1: split across 2 consecutive allowed slots, chosen by pairing score.
-        // For a group of 3, all 3 possible 2+1 splits are evaluated so that the
-        // pair placed in the same slot rotates each week (preventing Laurie+Ursula
-        // from always landing together while Louise goes elsewhere).
         {
-          // Build all candidate slot-pairs in the allowed range
           const slotPairs = [];
           for (const si of allowed) {
             const ni = si + 1;
@@ -1595,28 +1623,19 @@ function scheduleWeek() {
               slotPairs.push({s1, s2});
           }
           if (slotPairs.length) {
-            // For each slot-pair, try every way to split members into the two slots
-            // and pick the combination with the lowest within-slot pairing score.
             let bestScore = Infinity, bestS1 = null, bestS2 = null,
                 bestGrp1 = null, bestGrp2 = null;
+            function combos(arr, k) {
+              if (k === 0) return [[]];
+              if (arr.length === k) return [arr.slice()];
+              const [first, ...rest] = arr;
+              return [...combos(rest, k-1).map(c=>[first,...c]), ...combos(rest, k)];
+            }
             for (const {s1, s2} of slotPairs) {
-              // Generate all ways to assign members to s1 vs s2
-              // (each member goes to exactly one slot; s1 gets ceil(n/2), s2 gets floor(n/2))
-              const n = members.length;
-              const size1 = Math.ceil(n / 2);
-              // Enumerate combinations for s1
-              function combos(arr, k) {
-                if (k === 0) return [[]];
-                if (arr.length === k) return [arr.slice()];
-                const [first, ...rest] = arr;
-                return [...combos(rest, k-1).map(c=>[first,...c]), ...combos(rest, k)];
-              }
+              const size1 = Math.ceil(members.length / 2);
               for (const grp1 of combos(members, size1)) {
                 const grp2 = members.filter(m => !grp1.includes(m));
-                // Only consider splits where both slots have enough capacity
                 if (cap(s1) < grp1.length || cap(s2) < grp2.length) continue;
-                // Score = within-slot pairings (how often these specific sub-groups
-                // have played together) + cross-slot occupant score
                 let score = 0;
                 for (let i=0;i<grp1.length;i++)
                   for (let j=i+1;j<grp1.length;j++)
@@ -1639,8 +1658,6 @@ function scheduleWeek() {
           }
         }
 
-        // Pass 2: no consecutive pair available — fit all into single allowed slot
-        // (chosen by pairing score)
         if (!placed) {
           const candidates = allowed
             .map(si => slotOf(si))
@@ -1652,8 +1669,6 @@ function scheduleWeek() {
           }
         }
 
-        // Pass 3: relax constraint — split across any 2 consecutive slots in block
-        // Same history-aware split logic as Pass 1.
         if (!placed) {
           const slotPairs3 = [];
           for (const si of blockSlots) {
@@ -1687,13 +1702,11 @@ function scheduleWeek() {
           }
         }
 
-        // Pass 4: relax constraint — any single slot with room
         if (!placed) {
           const sl = slots.find(sl => cap(sl) >= members.length);
           if (sl) { members.forEach(m => sl.players.push(m)); placed=true; }
         }
 
-        // Last resort: greedy fill anywhere
         if (!placed) {
           let rem=[...members];
           for (const sl of slots) { while(cap(sl)>0&&rem.length) sl.players.push(rem.shift()); if(!rem.length) break; }
@@ -2149,86 +2162,136 @@ function downloadTeeSheet(weekIndex) {
   if (!w || !w.assignments) { showToast('No tee sheet data for this week'); return; }
 
   const TYPE_LABELS = { early:'Early', late:'Late', not_before:'Not Before', not_after:'Not After' };
+  const rows = [];
 
-  // ── Sheet 1: Tee Sheet (HTML-as-XLS for full styling support) ──────────
-  const tsRows = [];
-  tsRows.push([`${weekLabel(w.week)} Tee Sheet`, '', '']);
-  tsRows.push(['Time', 'Holes', 'Players']);
+  // Title row
+  rows.push([`${weekLabel(w.week)} Tee Sheet`, '', '']);
+
+  // Header row
+  rows.push(['Time', 'Holes', 'Players']);
+
+  // Tee time rows — first player on same row as time, rest stacked below
   for (const slot of w.assignments) {
     const t = TEE_TIMES[slot.si];
     const names = slot.players.map(p => p.name + (p.carpool ? ` (CP${p.carpool})` : ''));
-    tsRows.push([t.label + ' AM', slot.players[0]?.holes || '', names[0] || '']);
-    for (let i = 1; i < names.length; i++) tsRows.push(['', '', names[i]]);
+    rows.push([t.label + ' AM', slot.players[0]?.holes || '', names[0] || '']);
+    for (let i = 1; i < names.length; i++) rows.push(['', '', names[i]]);
   }
 
-  const cellStyle = 'border:1px solid #000;text-align:center;vertical-align:middle;padding:4px 8px;';
-  let tableHtml = `<html xmlns:o="urn:schemas-microsoft-com:office:office"
-    xmlns:x="urn:schemas-microsoft-com:office:excel"
-    xmlns="http://www.w3.org/TR/REC-html40">
-<head><meta charset="UTF-8"></head><body>
-<table border="1" cellspacing="0" cellpadding="4" style="border-collapse:collapse;">
-<colgroup><col style="width:120px"><col style="width:80px"><col style="width:280px"></colgroup>`;
+  // Blank separator
+  rows.push(['', '', '']);
 
-  tsRows.forEach((row, ri) => {
-    tableHtml += '<tr>';
-    if (ri === 0) {
-      tableHtml += `<td colspan="3" style="${cellStyle}font-weight:bold;">${row[0]}</td>`;
-    } else {
-      row.forEach(cell => { tableHtml += `<td style="${cellStyle}">${cell}</td>`; });
-    }
-    tableHtml += '</tr>';
-  });
-  tableHtml += '</table>';
-
-  // ── Constraints section appended below tee sheet ──────────────────────
-  tableHtml += `<br><table border="1" cellspacing="0" cellpadding="4" style="border-collapse:collapse;">
-<colgroup><col style="width:200px"><col style="width:200px"><col style="width:120px"><col style="width:220px"></colgroup>`;
-
-  // Constraints title
-  tableHtml += `<tr><td colspan="4" style="${cellStyle}font-weight:bold;">${weekLabel(w.week)} — Constraint Summary</td></tr>`;
-
-  // Absent players
-  tableHtml += `<tr><td colspan="4" style="${cellStyle}font-weight:bold;">ABSENT PLAYERS</td></tr>`;
+  // Constraints section
+  rows.push([`${weekLabel(w.week)} — Constraint Summary`, '', '']);
+  rows.push(['ABSENT PLAYERS', '', '']);
   if (w.absent && w.absent.length) {
-    for (const name of w.absent) {
-      tableHtml += `<tr><td colspan="4" style="${cellStyle}">${name}</td></tr>`;
-    }
+    for (const name of w.absent) rows.push(['', name, '']);
   } else {
-    tableHtml += `<tr><td colspan="4" style="${cellStyle}">None</td></tr>`;
+    rows.push(['', 'None', '']);
   }
-
-  // Special time requests
-  tableHtml += `<tr><td colspan="4" style="${cellStyle}font-weight:bold;">SPECIAL TIME REQUESTS</td></tr>`;
+  rows.push(['', '', '']);
+  rows.push(['SPECIAL TIME REQUESTS', '', '']);
   const reqs = Object.entries(w.requests || {});
   if (reqs.length) {
-    tableHtml += `<tr>
-      <td style="${cellStyle}font-weight:bold;">Player</td>
-      <td style="${cellStyle}font-weight:bold;">Request</td>
-      <td style="${cellStyle}font-weight:bold;">Time</td>
-      <td style="${cellStyle}font-weight:bold;">Carpool Split</td>
-    </tr>`;
+    rows.push(['Player', 'Request', 'Time', 'Carpool Split']);
     for (const [name, req] of reqs) {
-      tableHtml += `<tr>
-        <td style="${cellStyle}">${name}</td>
-        <td style="${cellStyle}">${TYPE_LABELS[req.type] || req.type}</td>
-        <td style="${cellStyle}">${req.time ? req.time + ' AM' : ''}</td>
-        <td style="${cellStyle}">${req.carpoolSplit ? 'Yes — travelling separately' : ''}</td>
-      </tr>`;
+      rows.push([
+        name,
+        TYPE_LABELS[req.type] || req.type,
+        req.time ? req.time + ' AM' : '',
+        req.carpoolSplit ? 'Yes — travelling separately' : ''
+      ]);
     }
   } else {
-    tableHtml += `<tr><td colspan="4" style="${cellStyle}">None</td></tr>`;
+    rows.push(['', 'None', '', '']);
   }
-  tableHtml += '</table></body></html>';
 
-  const tsBlob = new Blob([tableHtml], { type: 'application/vnd.ms-excel;charset=utf-8' });
-  const tsA = document.createElement('a');
-  tsA.href = URL.createObjectURL(tsBlob);
-  tsA.download = `golf-league-${dateSlug(w.week)}-teesheet.xls`;
-  document.body.appendChild(tsA);
-  tsA.click();
-  document.body.removeChild(tsA);
+  // Convert to CSV
+  const csv = rows.map(row =>
+    row.map(cell => {
+      const s = String(cell);
+      return s.includes(',') || s.includes('"') || s.includes('\n')
+        ? `"${s.replace(/"/g, '""')}"` : s;
+    }).join(',')
+  ).join('\n');
 
-  showToast(`Week ${w.week} tee sheet downloaded`);
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `golf-league-${dateSlug(w.week)}-teesheet.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  showToast(`Week ${w.week} tee sheet downloaded (CSV)`);
+}
+
+// ── COPY TEE SHEET TO CLIPBOARD ──────────────────────────────────────────
+function copyTeeSheet(weekIndex) {
+  const w = state.weeklyHistory[weekIndex];
+  if (!w || !w.assignments) { showToast('No tee sheet data for this week'); return; }
+
+  // Build a clean HTML table suitable for pasting into Mailchimp
+  const tableStyle = 'border-collapse:collapse;font-family:Arial,sans-serif;font-size:14px;';
+  const thStyle    = 'border:1px solid #999;padding:6px 12px;text-align:center;background:#e8f0eb;font-weight:bold;';
+  const tdStyle    = 'border:1px solid #999;padding:6px 12px;text-align:center;';
+  const titleStyle = 'border:1px solid #999;padding:8px 12px;text-align:center;font-weight:bold;font-size:16px;background:#e8f0eb;';
+
+  let html = `<table style="${tableStyle}">`;
+
+  // Title row
+  html += `<tr><td colspan="3" style="${titleStyle}">${weekLabel(w.week)} Tee Sheet</td></tr>`;
+
+  // Header row
+  html += `<tr>
+    <th style="${thStyle}">Time</th>
+    <th style="${thStyle}">Holes</th>
+    <th style="${thStyle}">Players</th>
+  </tr>`;
+
+  // Tee time rows
+  for (const slot of w.assignments) {
+    const t = TEE_TIMES[slot.si];
+    const names = slot.players.map(p => p.name + (p.carpool ? ` (CP${p.carpool})` : ''));
+    html += `<tr>
+      <td style="${tdStyle}">${t.label} AM</td>
+      <td style="${tdStyle}">${slot.players[0]?.holes || ''}</td>
+      <td style="${tdStyle}">${names[0] || ''}</td>
+    </tr>`;
+    for (let i = 1; i < names.length; i++) {
+      html += `<tr>
+        <td style="${tdStyle}"></td>
+        <td style="${tdStyle}"></td>
+        <td style="${tdStyle}">${names[i]}</td>
+      </tr>`;
+    }
+  }
+  html += '</table>';
+
+  // Use clipboard API with both HTML and plain-text fallback
+  const plainText = w.assignments.map(slot => {
+    const t = TEE_TIMES[slot.si];
+    const names = slot.players.map(p => p.name + (p.carpool ? ` (CP${p.carpool})` : ''));
+    return `${t.label} AM  |  ${slot.players[0]?.holes || ''}  |  ${names.join(', ')}`;
+  }).join('\n');
+
+  try {
+    const htmlBlob  = new Blob([html],      { type: 'text/html' });
+    const textBlob  = new Blob([plainText], { type: 'text/plain' });
+    const item      = new ClipboardItem({ 'text/html': htmlBlob, 'text/plain': textBlob });
+    navigator.clipboard.write([item]).then(() => {
+      showToast('Tee sheet copied — paste into Mailchimp!');
+    }).catch(() => {
+      // Fallback: plain text only
+      navigator.clipboard.writeText(plainText).then(() => {
+        showToast('Copied as plain text (HTML not supported in this browser)');
+      });
+    });
+  } catch(e) {
+    // Last resort fallback
+    navigator.clipboard.writeText(plainText).then(() => {
+      showToast('Copied as plain text');
+    });
+  }
 }
 
 // ── Future Weeks ──────────────────────────────────────────────────────────
