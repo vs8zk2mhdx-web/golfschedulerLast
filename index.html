@@ -547,11 +547,11 @@ button { cursor: pointer; font-family: 'Source Sans 3', sans-serif; transition: 
 </div>
 
 <nav>
-  <button class="nav-btn active" id="nav-setup"    onclick="showScreen('setup')">Weekly Setup</button>
-  <button class="nav-btn"        id="nav-schedule" onclick="showScreen('schedule')">Current Tee Sheet</button>
-  <button class="nav-btn"        id="nav-history"  onclick="showScreen('history')">Tee Sheets and History</button>
+  <button class="nav-btn active" id="nav-setup"    onclick="showScreen('setup')">Make Tee Sheet</button>
+  <button class="nav-btn"        id="nav-schedule" onclick="showScreen('schedule')">Review Tee Sheet</button>
+  <button class="nav-btn"        id="nav-history"  onclick="showScreen('history')">Download Tee Sheet</button>
   <div class="nav-dropdown" id="futureWeeksDropdown">
-    <button class="nav-btn" id="nav-future" onclick="toggleFutureMenu()">Future Weeks ▾</button>
+    <button class="nav-btn" id="nav-future" onclick="toggleFutureMenu()">Future Requests ▾</button>
     <div class="dropdown-menu" id="futureMenu"></div>
   </div>
   <div class="nav-dropdown" id="rosterDropdown">
@@ -1221,7 +1221,7 @@ function renderSetupContent(isFuture) {
 function renderSchedule() {
   if (!currentAssignments) {
     return `<div style="padding:40px;text-align:center;color:var(--text-muted)">
-      No tee sheet generated yet. Go to <strong>Weekly Setup</strong> to generate one.
+      No tee sheet generated yet. Go to <strong>Make Tee Sheet</strong> to generate one.
     </div>`;
   }
 
