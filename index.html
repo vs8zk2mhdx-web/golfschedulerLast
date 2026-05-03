@@ -2082,30 +2082,62 @@ function uploadRoster(e) {
   const reader = new FileReader();
   reader.onload = ev => {
     try {
-      const lines = ev.target.result.split(/\r?\n/).filter(l => l.trim());
-      // Skip header row if it starts with "Name" (case-insensitive)
-      const start = lines[0].toLowerCase().startsWith('name') ? 1 : 0;
-      const newRoster = [];
-      for (let i = start; i < lines.length; i++) {
-        const parts = lines[i].split(',').map(s => s.trim());
-        if (parts.length < 2 || !parts[0]) continue;
-        const name   = cleanName(parts[0]);
-        const holes  = parseInt(parts[1]) === 18 ? 18 : 9;
-        const cp     = parts[2] ? (parseInt(parts[2]) || null) : null;
-        newRoster.push({ name, holes, carpool: cp });
+      // Strip BOM if present (added by Excel/Numbers on some systems)
+      const raw = ev.target.result.replace(/^\uFEFF/, '');
+      const allLines = raw.split(/\r?\n/).filter(l => l.trim());
+
+      // Detect delimiter: semicolons are used in some regional CSV settings
+      const delim = allLines[0].includes(';') ? ';' : ',';
+
+      // Parse a single CSV line respecting quoted fields
+      function parseLine(line) {
+        const result = [];
+        let cur = '', inQuote = false;
+        for (let i = 0; i < line.length; i++) {
+          const ch = line[i];
+          if (ch === '"') {
+            if (inQuote && line[i+1] === '"') { cur += '"'; i++; }
+            else inQuote = !inQuote;
+          } else if (ch === delim && !inQuote) {
+            result.push(cur.trim()); cur = '';
+          } else {
+            cur += ch;
+          }
+        }
+        result.push(cur.trim());
+        return result;
       }
-      if (newRoster.length < 2) { showToast('CSV too short — check format'); return; }
+
+      // Skip header row — check robustly by stripping quotes and BOM
+      const firstCell = parseLine(allLines[0])[0].replace(/^[\uFEFF"']+|["']+$/g, '').toLowerCase();
+      const start = firstCell.startsWith('name') ? 1 : 0;
+
+      const newRoster = [];
+      for (let i = start; i < allLines.length; i++) {
+        const parts = parseLine(allLines[i]);
+        if (parts.length < 2 || !parts[0]) continue;
+        const name  = cleanName(parts[0]);
+        if (!name) continue;
+        const holes = parseInt(parts[1]) === 18 ? 18 : 9;
+        const cpRaw = parts[2] || '';
+        const cp    = cpRaw ? (parseInt(cpRaw) || null) : null;
+        // Preserve 'deleted' status if re-uploading a previously downloaded roster
+        const player = { name, holes, carpool: cp };
+        if ((parts[3] || '').toLowerCase() === 'inactive') player.deleted = true;
+        newRoster.push(player);
+      }
+
+      if (newRoster.length < 2) { showToast('CSV too short — check format (need Name, Holes, Carpool columns)'); return; }
       if (!confirm(`Replace roster with ${newRoster.length} players from "${file.name}"?\nThis will clear the current week. Season history is kept.`)) return;
       ROSTER_RAW = newRoster;
-      ROSTER     = newRoster; // already cleaned above
+      state.customRoster = newRoster;
+      restoreCustomRoster(); // rebuilds ROSTER with deleted filter applied
       weekly     = { optOuts: {}, specialRequests: {} };
       currentAssignments = null;
       expandedPlayer = null;
-      // Save custom roster into state so it persists
-      state.customRoster = newRoster;
       saveToStorage();
       showScreen('setup');
-      showToast(`Roster updated: ${newRoster.length} players`);
+      showToast(`Roster updated: ${newRoster.length} players loaded`);
     } catch(err) { showToast('Error reading CSV: ' + err.message); }
   };
   reader.readAsText(file);
