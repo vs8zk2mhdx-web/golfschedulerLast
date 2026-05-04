@@ -612,17 +612,22 @@ let ROSTER     = [];
 
 // ── Tee Times ─────────────────────────────────────────────────────────────
 let TEE_TIMES = [];
+const SEASON_WEEKS = 20; // Total weeks in a season
 
 function buildTeeTimes(startTimeStr) {
   // startTimeStr: "HH:MM" e.g. "08:30". Defaults to "08:30" if absent.
+  // Generates 35 slots (enough for any roster size) with no end-time cutoff.
   const [sh, sm] = (startTimeStr || '08:30').split(':').map(Number);
   const times = [];
-  let h = sh, m = sm;
-  while (h < 12) {
-    times.push({ index: times.length, mins: h * 60 + m,
-      label: `${h}:${String(m).padStart(2,'0')}` });
-    m += 8; if (m >= 60) { m -= 60; h++; }
-    if (h === 11 && m > 45) break;
+  let totalMins = sh * 60 + sm;
+  for (let i = 0; i < 35; i++) {
+    const h = Math.floor(totalMins / 60);
+    const m = totalMins % 60;
+    const displayH = h > 12 ? h - 12 : (h === 0 ? 12 : h);
+    const suffix = h < 12 ? 'AM' : 'PM';
+    times.push({ index: i, mins: totalMins,
+      label: `${displayH}:${String(m).padStart(2,'0')} ${suffix}` });
+    totalMins += 8;
   }
   return times;
 }
@@ -870,14 +875,23 @@ async function saveSyncConfig() {
   saveLocal();
   document.querySelector('.modal-overlay')?.remove();
   showToast('Testing connection…');
+
+  // Try to load from the bin — if it has existing data, use it
   const ok = await loadFromJSONBin();
-  if (ok) {
-    restoreCustomRoster();
-    render();
-    showToast('Connected! Data loaded from JSONBin.');
-  } else {
+  if (!ok) {
     showToast('Could not connect — check your Bin ID and API Key.');
+    return;
   }
+
+  // Always push current state to the bin immediately after connecting.
+  // This ensures a new empty bin gets the current roster and season data
+  // right away, rather than waiting for the next change to trigger a sync.
+  await syncToJSONBin();
+
+  restoreCustomRoster();
+  render();
+  const rosterCount = (state.customRoster || []).filter(p => !p.deleted).length;
+  showToast(`Connected! ${rosterCount ? `${rosterCount} players synced to bin.` : 'Bin connected.'}`);
 }
 
 function exportData() {
@@ -935,7 +949,7 @@ function showSeasonStartDateModal(isNewSeason) {
              min="06:00" max="11:45" step="60" value="${curTime}"
              style="width:auto;max-width:160px">
       <div style="font-size:11px;color:var(--text-muted);margin-top:-8px;margin-bottom:12px">
-        Tee times run every 8 minutes from this start through 11:45 AM.
+        Tee times run every 8 minutes from this start time.
       </div>
       <div class="modal-actions">
         ${!isNewSeason ? `<button class="btn-ghost dark btn-sm" onclick="this.closest('.modal-overlay').remove()">Skip</button>` : ''}
@@ -955,8 +969,11 @@ function saveSeasonStartDate(isNewSeason) {
   if (!dateVal) { showToast('Please select a date'); return; }
   document.querySelector('.modal-overlay')?.remove();
   if (isNewSeason) {
+    // Preserve the roster across seasons — only history and week data is cleared
+    const preservedRoster = state.customRoster || [];
     state  = { weekNum: 1, seasonStartDate: dateVal, seasonTeeTime: timeVal,
-               pairingHistory: {}, weeklyHistory: [], futureWeeks: {} };
+               pairingHistory: {}, weeklyHistory: [], futureWeeks: {},
+               customRoster: preservedRoster };
     weekly = { optOuts: {}, specialRequests: {} };
     currentAssignments = null;
     expandedPlayer = null;
@@ -1189,12 +1206,19 @@ function renderSetupContent(isFuture) {
     `;
   }
 
+  const weekTeeTime = weekly.teeTime || state.seasonTeeTime || '08:30';
+  const [wh, wm] = weekTeeTime.split(':').map(Number);
+  const wDispH = wh > 12 ? wh - 12 : (wh === 0 ? 12 : wh);
+  const wSuffix = wh < 12 ? 'AM' : 'PM';
+  const weekTeeDisplay = `${wDispH}:${String(wm).padStart(2,'0')} ${wSuffix}`;
+
   return `
     <div class="stats-grid">
       <div class="stat-card"><div class="stat-num">${active.length}</div><div class="stat-label">Playing</div></div>
       <div class="stat-card"><div class="stat-num red">${absent}</div><div class="stat-label">Absent</div></div>
       <div class="stat-card"><div class="stat-num blue">${reqCount}</div><div class="stat-label">Requests</div></div>
     </div>
+    ${!isFuture ? buildTeeTimeBar(weekTeeDisplay) : ''}
     <div class="card">
       <div class="card-header">Roster — Click a Name to Manage</div>
       <div class="card-body" style="padding-bottom:8px">
@@ -1279,7 +1303,7 @@ function renderSchedule() {
     return `
       <div class="tee-slot">
         <div class="slot-time h${h}">
-          ${t.label} AM
+          ${t.label}
           <div class="slot-sub">${h} holes · ${slot.players.length} players</div>
         </div>
         <div class="slot-players">${chips}${emptyTarget}</div>
@@ -1935,6 +1959,8 @@ function doMovePlayer(fromSi, fromPi, toSi) {
 function doGenerate() {
   swapSelection = null;
   if (!ROSTER.length) { showToast('Please upload a roster first'); return; }
+  // Use this week's tee time override if set, otherwise season default
+  TEE_TIMES = buildTeeTimes(weekly.teeTime || state.seasonTeeTime || '08:30');
   try {
     currentAssignments = scheduleWeek();
     showScreen('schedule');
@@ -1968,7 +1994,10 @@ function doReset() {
 
 function doCommit() {
   if (!currentAssignments) return;
-  if (!confirm(`Commit ${weekLabel(state.weekNum)} and advance to ${weekLabel(state.weekNum + 1)}?`)) return;
+  const isLastWeek = state.weekNum >= SEASON_WEEKS;
+  if (!confirm(isLastWeek
+    ? `Commit ${weekLabel(state.weekNum)}? This is the final week of the season.`
+    : `Commit ${weekLabel(state.weekNum)} and advance to ${weekLabel(state.weekNum + 1)}?`)) return;
 
   // Record all pairings
   for (const slot of currentAssignments) {
@@ -1995,12 +2024,14 @@ function doCommit() {
       players: sl.players.map(p => ({ name: p.name, holes: p.holes, carpool: p.carpool }))
     }))
   });
-  state.weekNum++;
+  if (state.weekNum < SEASON_WEEKS) state.weekNum++;
 
   // Load pre-entered future week data if available, else start fresh
   const pre = (state.futureWeeks || {})[state.weekNum];
+  // teeTime is NOT carried forward — next week always defaults to season start time
   weekly = pre ? { optOuts: { ...(pre.optOuts||{}) }, specialRequests: { ...(pre.specialRequests||{}) } }
                : { optOuts: {}, specialRequests: {} };
+  TEE_TIMES = buildTeeTimes(state.seasonTeeTime || '08:30');
   // Remove the now-current week from futureWeeks
   if (state.futureWeeks) delete state.futureWeeks[state.weekNum];
   currentAssignments = null;
@@ -2109,8 +2140,8 @@ function uploadRoster(e) {
       }
 
       // Skip header row — check robustly by stripping quotes and BOM
-      const firstCell = parseLine(allLines[0])[0].replace(/^[\uFEFF"']+|["']+$/g, '').toLowerCase();
-      const start = firstCell.startsWith('name') ? 1 : 0;
+      const firstCell = parseLine(allLines[0])[0].replace(/^[\uFEFF"']+|["']+$/g, '').toLowerCase().trim();
+      const start = (firstCell.startsWith('name') || firstCell === 'player') ? 1 : 0;
 
       const newRoster = [];
       for (let i = start; i < allLines.length; i++) {
@@ -2119,7 +2150,7 @@ function uploadRoster(e) {
         const name  = cleanName(parts[0]);
         if (!name) continue;
         const holes = parseInt(parts[1]) === 18 ? 18 : 9;
-        const cpRaw = parts[2] || '';
+        const cpRaw = (parts[2] || '').trim().toUpperCase().replace(/^CP/,'');
         const cp    = cpRaw ? (parseInt(cpRaw) || null) : null;
         // Preserve 'deleted' status if re-uploading a previously downloaded roster
         const player = { name, holes, carpool: cp };
@@ -2128,6 +2159,7 @@ function uploadRoster(e) {
       }
 
       if (newRoster.length < 2) { showToast('CSV too short — check format (need Name, Holes, Carpool columns)'); return; }
+
       if (!confirm(`Replace roster with ${newRoster.length} players from "${file.name}"?\nThis will clear the current week. Season history is kept.`)) return;
       ROSTER_RAW = newRoster;
       state.customRoster = newRoster;
@@ -2206,7 +2238,7 @@ function downloadTeeSheet(weekIndex) {
   for (const slot of w.assignments) {
     const t = TEE_TIMES[slot.si];
     const names = slot.players.map(p => p.name + (p.carpool ? ` (CP${p.carpool})` : ''));
-    rows.push([t.label + ' AM', slot.players[0]?.holes || '', names[0] || '']);
+    rows.push([t.label, slot.players[0]?.holes || '', names[0] || '']);
     for (let i = 1; i < names.length; i++) rows.push(['', '', names[i]]);
   }
 
@@ -2303,7 +2335,7 @@ function copyTeeSheet(weekIndex) {
   const plainText = w.assignments.map(slot => {
     const t = TEE_TIMES[slot.si];
     const names = slot.players.map(p => p.name + (p.carpool ? ` (CP${p.carpool})` : ''));
-    return `${t.label} AM  |  ${slot.players[0]?.holes || ''}  |  ${names.join(', ')}`;
+    return `${t.label}  |  ${slot.players[0]?.holes || ''}  |  ${names.join(', ')}`;
   }).join('\n');
 
   try {
@@ -2340,9 +2372,9 @@ function toggleFutureMenu() {
     menu.classList.remove('open');
     return;
   }
-  // Build menu items: next 8 future weeks
+  // Build menu items: all remaining weeks in the season
   const items = [];
-  for (let w = state.weekNum + 1; w <= state.weekNum + 8; w++) {
+  for (let w = state.weekNum + 1; w <= SEASON_WEEKS; w++) {
     const hasData = state.futureWeeks && state.futureWeeks[w] &&
       (Object.keys(state.futureWeeks[w].optOuts||{}).length > 0 ||
        Object.keys(state.futureWeeks[w].specialRequests||{}).length > 0);
@@ -2411,6 +2443,67 @@ function renderFutureWeek() {
     </div>
     ${setupHtml}
   `;
+}
+
+// ── WEEKLY TEE TIME OVERRIDE ──────────────────────────────────────────────
+function buildTeeTimeBar(displayTime) {
+  const modified = !!weekly.teeTime;
+  let html = '<div style="display:flex;align-items:center;gap:10px;padding:10px 16px;' +
+             'background:var(--bg);border-radius:8px;margin-bottom:12px;font-size:14px;">';
+  html += '<span>⏰ <strong>Start time this week:</strong> ' + displayTime + '</span>';
+  if (modified) {
+    html += '<span style="font-size:11px;color:var(--green-mid);font-weight:600;">MODIFIED</span>';
+  }
+  html += '<button class="btn-ghost dark btn-sm" onclick="showChangeTeeTime()">Change?</button>';
+  if (modified) {
+    html += '<button class="btn-ghost dark btn-sm" onclick="resetTeeTime()">Reset to season default</button>';
+  }
+  html += '</div>';
+  return html;
+}
+function showChangeTeeTime() {
+  const current = weekly.teeTime || state.seasonTeeTime || '08:30';
+  const modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:1000;';
+  modal.innerHTML = `
+    <div style="background:white;border-radius:12px;padding:28px 32px;max-width:360px;width:90%;
+                box-shadow:0 8px 32px rgba(0,0,0,0.25);text-align:center;">
+      <div style="font-family:'Playfair Display',serif;font-size:18px;font-weight:700;
+                  color:var(--green-dark);margin-bottom:8px">Change Start Time</div>
+      <div style="font-size:13px;color:var(--text-muted);margin-bottom:20px">
+        This change applies to this week only.<br>Next week reverts to the season default.
+      </div>
+      <input type="time" id="newTeeTimeInput" value="${current}"
+        style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:6px;
+               font-size:16px;font-family:inherit;text-align:center;margin-bottom:20px;">
+      <div style="display:flex;gap:10px;justify-content:center;">
+        <button onclick="applyNewTeeTime()" class="btn-primary btn-sm">Apply</button>
+        <button onclick="this.closest('div[style*=fixed]').remove()" class="btn-ghost btn-sm">Cancel</button>
+      </div>
+    </div>`;
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+  document.body.appendChild(modal);
+}
+
+function applyNewTeeTime() {
+  const val = document.getElementById('newTeeTimeInput')?.value;
+  if (!val) return;
+  weekly.teeTime = val;
+  TEE_TIMES = buildTeeTimes(val);
+  currentAssignments = null;
+  document.querySelector('div[style*=fixed]')?.remove();
+  saveToStorage();
+  render();
+  showToast('Start time updated for this week');
+}
+
+function resetTeeTime() {
+  delete weekly.teeTime;
+  TEE_TIMES = buildTeeTimes(state.seasonTeeTime || '08:30');
+  currentAssignments = null;
+  saveToStorage();
+  render();
+  showToast('Start time reset to season default');
 }
 
 // ── ROSTER DROPDOWN ───────────────────────────────────────────────────────
