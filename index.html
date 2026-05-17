@@ -685,9 +685,9 @@ function saveLocal() {
     localStorage.setItem('golf_version', STORAGE_VERSION);
     localStorage.setItem('golf_state',   JSON.stringify(state));
     localStorage.setItem('golf_weekly',  JSON.stringify(weekly));
-    // Save credentials under version-independent keys
-    localStorage.setItem('golf_credentials_bin', BIN_ID);
-    localStorage.setItem('golf_credentials_key', API_KEY);
+    // Only save credentials if non-empty — never overwrite with blank values
+    if (BIN_ID)  localStorage.setItem('golf_credentials_bin', BIN_ID);
+    if (API_KEY) localStorage.setItem('golf_credentials_key', API_KEY);
   } catch(e) { console.warn('Local save failed:', e); }
 }
 
